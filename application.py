@@ -21,10 +21,9 @@ import numpy
 import requests  
 
 application = Flask(__name__)
-application.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///pdfs.db'  
-application.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+
 application.config['KEYWORDS_FOLDER'] = 'keywords/'
-db = SQLAlchemy(application)
+
 
 load_dotenv()
 openai_api_key = os.getenv("OPENAI_API_KEY")
@@ -41,34 +40,10 @@ def home():
 
 ALLOWED_EXTENSIONS = {'pdf', 'png', 'jpg', 'jpeg'}
 
-class PDF(db.Model):
-    id = db.Column(db.Integer, primary_key=True)
-    filename = db.Column(db.String(255), nullable=False)
-    data = db.Column(db.LargeBinary, nullable=False)
-
 def allowed_file(filename):
     return '.' in filename and filename.rsplit('.', 1)[1].lower() in ALLOWED_EXTENSIONS
 
-def extract_keywords_from_pdf(file_path):
-    keywords = []
-    with open(file_path, 'rb') as file:
-        pdf_reader = PyPDF2.PdfReader(file)
-        start_extracting = False
-        for page in pdf_reader.pages:
-            page_text = page.extract_text()
-            lines = page_text.split('\n')
-            for line in lines:
-                line = line.strip()
-                if line == "Analytical Chemistry and":
-                    start_extracting = True
-                    continue
-                if start_extracting and line and not line[0].isdigit() and ":" not in line:
-                    words = line.split()
-                    if 1 <= len(words) <= 8 and all(len(word) > 1 for word in words):
-                        if not any(word.lower() in ['and', 'or', 'the', 'of', 'including'] for word in words):
-                            if not line.endswith(('and', 'or', 'the', 'of')):
-                                keywords.applicationend(line)
-    return keywords
+
 
 def get_latest_keywords_file():
     keywords_dir = os.path.join(application.root_path, application.config['KEYWORDS_FOLDER'])
@@ -245,178 +220,6 @@ def upload_chemical_image():
     return render_template('upload_image.html')
 
 
-def match_keywords_using_tfidf(text, keywords):
-    corpus = [text] + keywords
-    vectorizer = TfidfVectorizer(ngram_range=(1, 3))
-    tfidf_matrix = vectorizer.fit_transform(corpus)
-    cosine_similarities = cosine_similarity(tfidf_matrix[0:1], tfidf_matrix[1:]).flatten()
-    keyword_similarity_pairs = [(keywords[i], cosine_similarities[i]) for i in range(len(keywords))]
-    keyword_similarity_pairs = sorted(keyword_similarity_pairs, key=lambda x: x[1], reverse=True)
-    seen_keywords = set()
-    unique_keywords = []
-    for keyword, similarity in keyword_similarity_pairs:
-        if keyword not in seen_keywords:
-            seen_keywords.add(keyword)
-            unique_keywords.applicationend((keyword, similarity))
-        if len(unique_keywords) >= 10:
-            break
-    return unique_keywords
-
-def extract_text_from_pdf_bytes(pdf_bytes):
-    pdf_file = io.BytesIO(pdf_bytes)
-    doc = fitz.open(stream=pdf_file, filetype="pdf")
-    text = ""
-    for page_num in range(min(2, doc.page_count)):
-        text += doc[page_num].get_text()
-    clean_text = re.sub(r"(DOI:.*|http[s]?://\S+|\bDownloaded\b.*|Science, \d{4}|Permission.*|[Cc]opyright.*)", "", text)
-    return clean_text
-
-def is_image_based_pdf_bytes(pdf_bytes):
-    pdf_file = io.BytesIO(pdf_bytes)
-    doc = fitz.open(stream=pdf_file, filetype="pdf")
-    image_based_pages = 0
-    for page_num in range(min(2, doc.page_count)):
-        page = doc.load_page(page_num)
-        image_list = page.get_images(full=True)
-        text = page.get_text()
-        if image_list and len(text) < 50:
-            image_based_pages += 1
-    return image_based_pages > 0
-
-def create_standard_prompt(text):
-    prompt = f"""
-    I have the following research article text:
-    
-    {text}
-
-    Please extract the following information in JSON format:
-    - Authors
-    - Abstract
-    - Institutions
-    - Corresponding authors with emails (if any)
-
-    Return the result in this JSON structure:
-    {{
-        "authors": [],
-        "abstract": "",
-        "institutions": [],
-        "corresponding_authors": []
-    }}
-    """
-    return prompt
-
-def create_prompt_for_image(text):
-    prompt = f"""
-    The following research article contains scanned images or has limited extractable text. Please do the following:
-    
-    1. Describe the image content in detail.
-    2. Try to identify any visible text, especially the names of authors, abstract, Corresponding authors with emails (if any) and any institutions.
-    3. Use best-guess reasoning based on the image's content to provide relevant information.
-    
-    Return the result only in valid JSON format, nothing else:
-    {{
-        "authors": [],
-        "abstract": "",
-        "institutions": [],
-        "corresponding_authors": []
-    }}
-    """
-    return prompt
-
-def extract_info_via_openai(prompt):
-    try:
-        response = openai.ChatCompletion.create(
-            model="gpt-4",
-            messages=[
-                {"role": "system", "content": "You are a helpful assistant."},
-                {"role": "user", "content": prompt}
-            ],
-            max_tokens=2000,
-            temperature=0
-        )
-        if 'choices' not in response or not response['choices']:
-            raise ValueError("No valid response from OpenAI API")
-        extracted_info = response['choices'][0]['message']['content'].strip()
-        json_start = extracted_info.find('{')
-        json_end = extracted_info.rfind('}')
-        clean_json = extracted_info[json_start:json_end + 1]
-        return clean_json
-    except Exception as e:
-        print(f"OpenAI API Error: {e}")
-        raise ValueError(f"OpenAI API Error: {e}")
-
-def process_pdf_with_openai_and_keywords(pdf_bytes):
-    if is_image_based_pdf_bytes(pdf_bytes):
-        print("Detected image-based PDF. Attempting to describe images and extract text.")
-        extracted_text = extract_text_from_pdf_bytes(pdf_bytes)
-        prompt = create_prompt_for_image(extracted_text)
-    else:
-        extracted_text = extract_text_from_pdf_bytes(pdf_bytes)
-        if not extracted_text:
-            raise ValueError("No text extracted from the PDF. The PDF might be empty or corrupted.")
-        prompt = create_standard_prompt(extracted_text)
-
-    extracted_info_json = extract_info_via_openai(prompt)
-    extracted_info_dict = json.loads(extracted_info_json)
-
-    keyword_list_path = get_latest_keywords_file()
-    keywords = extract_keywords_from_pdf(keyword_list_path)
-    matched_keywords = match_keywords_using_tfidf(extracted_info_dict.get('abstract', ''), keywords)
-    extracted_info_dict['matched_keywords'] = matched_keywords
-
-    return extracted_info_dict
-
-@application.route('/db_info', methods=['GET'])
-def get_db_info():
-    try:
-        # Get total number of PDFs
-        total_pdfs = PDF.query.count()
-
-        # Get information about the last 5 uploaded PDFs
-        recent_pdfs = PDF.query.order_by(PDF.id.desc()).limit(5).all()
-        recent_pdf_info = [
-            {
-                'id': pdf.id,
-                'filename': pdf.filename,
-                'size': len(pdf.data)  # Size in bytes
-            } for pdf in recent_pdfs
-        ]
-
-        return jsonify({
-            'total_pdfs': total_pdfs,
-            'recent_uploads': recent_pdf_info
-        })
-    except SQLAlchemyError as e:
-        return jsonify({'error': 'Database error occurred'}), 500
-    
-
-@application.route('/UploadResearchPaper', methods=['GET', 'POST'])
-def upload_ResearchPaperfile():
-    if request.method == 'POST':
-        if 'file' not in request.files:
-            return jsonify({'error': 'No file part'}), 400
-        file = request.files['file']
-        if file.filename == '':
-            return jsonify({'error': 'No selected file'}), 400
-        if file and allowed_file(file.filename):
-            filename = secure_filename(file.filename)
-            pdf_bytes = file.read()
-
-            # Save PDF to database
-            new_pdf = PDF(filename=filename, data=pdf_bytes)
-            db.session.add(new_pdf)
-            db.session.commit()
-
-            try:
-                info_json = process_pdf_with_openai_and_keywords(pdf_bytes)
-                return jsonify(info_json)
-            except Exception as e:
-                return jsonify({'error': str(e)}), 500
-        else:
-            return jsonify({'error': 'File type not allowed'}), 400
-    return render_template('upload.html')
-
 if __name__ == '__main__':
-    with application.application_context():
-        db.create_all()
+    
     application.run(debug=True)

@@ -20,11 +20,11 @@ import cv2
 import numpy
 import requests  
 
-app = Flask(__name__)
-app.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///pdfs.db'  
-app.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
-app.config['KEYWORDS_FOLDER'] = 'keywords/'
-db = SQLAlchemy(app)
+application = Flask(__name__)
+application.config['SQLALCHEMY_DATABASE_URI'] = 'sqlite:///pdfs.db'  
+application.config['SQLALCHEMY_TRACK_MODIFICATIONS'] = False
+application.config['KEYWORDS_FOLDER'] = 'keywords/'
+db = SQLAlchemy(application)
 
 load_dotenv()
 openai_api_key = os.getenv("OPENAI_API_KEY")
@@ -33,6 +33,11 @@ if openai_api_key is None:
 
 openai.api_key = openai_api_key
 
+
+@application.route('/')
+def home():
+    response_html = f"<p>Connecting the deployed endpoint to moodle for test response</p>"
+    return response_html
 
 ALLOWED_EXTENSIONS = {'pdf', 'png', 'jpg', 'jpeg'}
 
@@ -62,11 +67,11 @@ def extract_keywords_from_pdf(file_path):
                     if 1 <= len(words) <= 8 and all(len(word) > 1 for word in words):
                         if not any(word.lower() in ['and', 'or', 'the', 'of', 'including'] for word in words):
                             if not line.endswith(('and', 'or', 'the', 'of')):
-                                keywords.append(line)
+                                keywords.applicationend(line)
     return keywords
 
 def get_latest_keywords_file():
-    keywords_dir = os.path.join(app.root_path, app.config['KEYWORDS_FOLDER'])
+    keywords_dir = os.path.join(application.root_path, application.config['KEYWORDS_FOLDER'])
     pdf_files = [f for f in os.listdir(keywords_dir) if f.endswith('.pdf')]
     if not pdf_files:
         raise FileNotFoundError("No keyword PDF files found in the keywords folder.")
@@ -87,7 +92,7 @@ def preprocess_image(image_path, max_size=600):
     # Convert to grayscale
     gray = cv2.cvtColor(img, cv2.COLOR_BGR2GRAY)
     
-    # Apply thresholding
+    # applicationly thresholding
     thresh = cv2.threshold(gray, 0, 255, cv2.THRESH_BINARY + cv2.THRESH_OTSU)[1]
     
     return thresh
@@ -208,7 +213,7 @@ def get_chemical_data(cas_number):
 
 
 
-@app.route('/UploadChemicalImage', methods=['GET', 'POST'])
+@application.route('/UploadChemicalImage', methods=['GET', 'POST'])
 def upload_chemical_image():
     if request.method == 'POST':
         if 'file' not in request.files:
@@ -218,7 +223,7 @@ def upload_chemical_image():
             return jsonify({'error': 'No selected file'}), 400
         if file and allowed_file(file.filename):
             filename = secure_filename(file.filename)
-            image_path = os.path.join(app.config['KEYWORDS_FOLDER'], filename)
+            image_path = os.path.join(application.config['KEYWORDS_FOLDER'], filename)
             file.save(image_path)
 
             try:
@@ -252,7 +257,7 @@ def match_keywords_using_tfidf(text, keywords):
     for keyword, similarity in keyword_similarity_pairs:
         if keyword not in seen_keywords:
             seen_keywords.add(keyword)
-            unique_keywords.append((keyword, similarity))
+            unique_keywords.applicationend((keyword, similarity))
         if len(unique_keywords) >= 10:
             break
     return unique_keywords
@@ -361,7 +366,7 @@ def process_pdf_with_openai_and_keywords(pdf_bytes):
 
     return extracted_info_dict
 
-@app.route('/db_info', methods=['GET'])
+@application.route('/db_info', methods=['GET'])
 def get_db_info():
     try:
         # Get total number of PDFs
@@ -385,7 +390,7 @@ def get_db_info():
         return jsonify({'error': 'Database error occurred'}), 500
     
 
-@app.route('/UploadResearchPaper', methods=['GET', 'POST'])
+@application.route('/UploadResearchPaper', methods=['GET', 'POST'])
 def upload_ResearchPaperfile():
     if request.method == 'POST':
         if 'file' not in request.files:
@@ -412,6 +417,6 @@ def upload_ResearchPaperfile():
     return render_template('upload.html')
 
 if __name__ == '__main__':
-    with app.app_context():
+    with application.application_context():
         db.create_all()
-    app.run(debug=True)
+    application.run(debug=True)
